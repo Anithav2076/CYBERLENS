@@ -1,5 +1,6 @@
 from typing import Any
 from datetime import datetime, timezone
+from backend.database.db import systems_collection, risk_assessments_collection
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -39,13 +40,24 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "http://localhost:5175",
-        "http://127.0.0.1:5175",
-    ],
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+    "http://localhost:5175",
+    "http://127.0.0.1:5175",
+    "http://localhost:5176",
+    "http://127.0.0.1:5176",
+    "http://localhost:5177",
+    "http://127.0.0.1:5177",
+    "http://localhost:5178",
+    "http://127.0.0.1:5178",
+    "http://localhost:5179",
+    "http://127.0.0.1:5179",
+    "http://localhost:5180",
+    "http://127.0.0.1:5180",
+],
+
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -420,165 +432,129 @@ def prioritize_cyber_mitigations(
 
 
 # ============================================================
-# 4. RISK HISTORY
+# 5. DASHBOARD STATISTICS
 # ============================================================
-
-@app.get("/risk-history")
-def get_risk_history(limit: int = 20):
-
-    from backend.database.db import (
-        risk_assessments_collection
-    )
-
+@app.get("/dashboard-stats")
+def dashboard_stats():
     try:
-
-        assessments = list(
-            risk_assessments_collection
-            .find(
-                {},
-                {
-                    "_id": 1,
-                    "system_id": 1,
-                    "attack_probability": 1,
-                    "risk_score": 1,
-                    "risk_level": 1,
-                    "model_version": 1,
-                    "timestamp": 1
-                }
-            )
-            .sort(
-                "timestamp",
-                -1
-            )
-            .limit(limit)
+        # ---------------------------------------------------------
+        # Get currently registered systems
+        # ---------------------------------------------------------
+        registered_systems = list(
+            systems_collection.find({}, {"system_id": 1})
         )
 
-        history = []
+        valid_system_ids = {
+            system["system_id"]
+            for system in registered_systems
+            if system.get("system_id")
+        }
+
+        # ---------------------------------------------------------
+        # Get risk assessments, newest first
+        # ---------------------------------------------------------
+        assessments = list(
+            risk_assessments_collection
+            .find({})
+            .sort("timestamp", -1)
+        )
+
+        # ---------------------------------------------------------
+        # Keep only assessments belonging to currently
+        # registered systems
+        # ---------------------------------------------------------
+        latest_by_system = {}
 
         for assessment in assessments:
 
-            history.append({
+            system_id = assessment.get("system_id")
 
-                "assessment_id":
-                    str(assessment["_id"]),
+            if (
+                system_id in valid_system_ids
+                and system_id not in latest_by_system
+            ):
+                latest_by_system[system_id] = assessment
 
-                "system_id":
-                    assessment.get(
-                        "system_id",
-                        "UNKNOWN"
-                    ),
+        latest_assessments = list(latest_by_system.values())
 
-                "attack_probability":
-                    assessment.get(
-                        "attack_probability"
-                    ),
+        # ---------------------------------------------------------
+        # Total currently monitored systems
+        # ---------------------------------------------------------
+        total_systems = len(valid_system_ids)
 
-                "risk_score":
-                    assessment.get(
-                        "risk_score"
-                    ),
+        # ---------------------------------------------------------
+        # Risk distribution
+        # ---------------------------------------------------------
+        critical_count = sum(
+            1
+            for a in latest_assessments
+            if a.get("risk_level") == "CRITICAL"
+        )
 
-                "risk_level":
-                    assessment.get(
-                        "risk_level"
-                    ),
+        high_count = sum(
+            1
+            for a in latest_assessments
+            if a.get("risk_level") == "HIGH"
+        )
 
-                "model_version":
-                    assessment.get(
-                        "model_version"
-                    ),
+        medium_count = sum(
+            1
+            for a in latest_assessments
+            if a.get("risk_level") == "MEDIUM"
+        )
 
-                "timestamp":
-                    assessment.get(
-                        "timestamp"
-                    )
-            })
+        low_count = sum(
+            1
+            for a in latest_assessments
+            if a.get("risk_level") == "LOW"
+        )
 
+        # ---------------------------------------------------------
+        # Risk scores
+        # ---------------------------------------------------------
+        scores = [
+            float(a.get("risk_score", 0))
+            for a in latest_assessments
+            if a.get("risk_score") is not None
+        ]
+
+        average_risk = (
+            sum(scores) / len(scores)
+            if scores
+            else 0
+        )
+
+        highest_risk = max(scores) if scores else 0
+        lowest_risk = min(scores) if scores else 0
+
+        # ---------------------------------------------------------
+        # Response
+        # ---------------------------------------------------------
         return {
+            "total_assessments": total_systems,
 
-            "count":
-                len(history),
+            "risk_distribution": {
+                "critical": critical_count,
+                "high": high_count,
+                "medium": medium_count,
+                "low": low_count
+            },
 
-            "risk_history":
-                history
-
+            "risk_statistics": {
+                "average_risk": round(average_risk, 2),
+                "highest_risk": round(highest_risk, 2),
+                "lowest_risk": round(lowest_risk, 2)
+            }
         }
 
     except Exception as error:
-
         raise HTTPException(
             status_code=500,
             detail={
-                "message":
-                    "Failed to retrieve risk history",
-
+                "message": "Failed to calculate dashboard statistics",
                 "error": str(error)
             }
         )
-
-
-# ============================================================
-# 5. DASHBOARD STATISTICS
-# ============================================================
-
-@app.get("/dashboard-stats")
-def get_dashboard_stats():
-
-    from backend.database.db import (
-        risk_assessments_collection
-    )
-
-    try:
-
-        # ----------------------------------------------------
-        # Total assessments
-        # ----------------------------------------------------
-
-        total_assessments = (
-            risk_assessments_collection
-            .count_documents({})
-        )
-
-        # ----------------------------------------------------
-        # Risk distribution
-        # ----------------------------------------------------
-
-        critical_count = (
-            risk_assessments_collection
-            .count_documents(
-                {
-                    "risk_level": "CRITICAL"
-                }
-            )
-        )
-
-        high_count = (
-            risk_assessments_collection
-            .count_documents(
-                {
-                    "risk_level": "HIGH"
-                }
-            )
-        )
-
-        medium_count = (
-            risk_assessments_collection
-            .count_documents(
-                {
-                    "risk_level": "MEDIUM"
-                }
-            )
-        )
-
-        low_count = (
-            risk_assessments_collection
-            .count_documents(
-                {
-                    "risk_level": "LOW"
-                }
-            )
-        )
-
         # ----------------------------------------------------
         # Get risk scores
         # ----------------------------------------------------
@@ -881,8 +857,78 @@ def get_systems():
                     str(error)
             }
         )
-        
-        # ============================================================
+
+
+@app.get("/risk-history")
+def get_risk_history(system_id: str = None):
+    try:
+        query = {}
+
+        if system_id:
+            query["system_id"] = system_id
+
+        assessments = list(
+            risk_assessments_collection
+            .find(
+                query,
+                {
+                    "_id": 0,
+                    "system_id": 1,
+                    "risk_score": 1,
+                    "risk_level": 1,
+                    "attack_probability": 1,
+                    "model_version": 1,
+                    "timestamp": 1
+                }
+            )
+            .sort("timestamp", -1)
+        )
+
+        history = []
+
+        for assessment in assessments:
+            history.append({
+                "system_id": assessment.get("system_id"),
+                "risk_score": round(
+                    float(assessment.get("risk_score", 0)), 2
+                ),
+                "risk_level": assessment.get(
+                    "risk_level",
+                    "UNKNOWN"
+                ),
+                "attack_probability": round(
+                    float(
+                        assessment.get(
+                            "attack_probability",
+                            0
+                        )
+                    ) * 100,
+                    2
+                ),
+                "model_version": assessment.get(
+                    "model_version"
+                ),
+                "timestamp": assessment.get(
+                    "timestamp"
+                )
+            })
+
+        return {
+            "total_records": len(history),
+            "history": history
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Failed to retrieve risk history",
+                "error": str(error)
+            }
+        )
+
+
+# ============================================================
 # 8. SYSTEM RISK DETAILS
 # ============================================================
 
@@ -977,6 +1023,7 @@ def get_system_risk(system_id: str):
             }
         )
       
+      
       # ============================================================
 # 9. SYSTEM OBSERVATION
 # ============================================================
@@ -1038,3 +1085,5 @@ def get_system_observation(system_id: str):
                 "error": str(error)
             }
         )
+
+
